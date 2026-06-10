@@ -11,11 +11,15 @@ use App\Core\Response;
 use App\Core\Router;
 use App\Core\View;
 use App\Services\AnalyticsService;
+use App\Services\SamlService;
+use App\Services\TotpService;
 use App\Services\WorkloadService;
 
 return function (Router $r, array $config): void {
     $analytics = new AnalyticsService();
     $workload = new WorkloadService();
+    $saml = new SamlService($config['saml']);
+    $totp = new TotpService();
 
     $currentTerm = function (Request $req): array {
         $termId = (int) ($req->query['term_id'] ?? 0);
@@ -29,23 +33,191 @@ return function (Router $r, array $config): void {
     $allTerms = fn () => DB::select('SELECT id, code, name, status FROM terms ORDER BY start_date DESC');
 
     // ---------------- Auth pages ----------------
-    $r->get('/login', function () use ($config) {
+    $loginView = fn (?string $error, int $status = 200) => Response::html(
+        View::render('login', [
+            'app' => $config['app'],
+            'error' => $error,
+            'samlEnabled' => $saml->isConfigured(),
+        ], null),
+        $status
+    );
+
+    $r->get('/login', function () use ($loginView) {
         if (Auth::user() !== null) {
             Response::redirect('/');
         }
-        Response::html(View::render('login', ['app' => $config['app'], 'error' => null], null));
+        $loginView(null);
     });
 
-    $r->post('/login', function (Request $req) use ($config) {
-        if (Auth::attempt((string) $req->input('email'), (string) $req->input('password'))) {
+    $r->post('/login', function (Request $req) use ($loginView) {
+        $result = Auth::attempt((string) $req->input('email'), (string) $req->input('password'));
+        match ($result) {
+            'ok' => Response::redirect('/'),
+            'mfa' => Response::redirect('/mfa'),
+            default => $loginView('Invalid email or password.', 401),
+        };
+    });
+
+    // ---- MFA challenge (password already verified) ----
+    $r->get('/mfa', function () use ($config) {
+        if (!isset($_SESSION['mfa_pending_user'])) {
+            Response::redirect('/login');
+        }
+        Response::html(View::render('mfa', ['app' => $config['app'], 'error' => null], null));
+    });
+
+    $r->post('/mfa', function (Request $req) use ($config) {
+        if (!isset($_SESSION['mfa_pending_user'])) {
+            Response::redirect('/login');
+        }
+        if (Auth::verifyMfa((string) $req->input('code'))) {
             Response::redirect('/');
         }
-        Response::html(View::render('login', ['app' => $config['app'], 'error' => 'Invalid email or password.'], null), 401);
+        Response::html(View::render('mfa', [
+            'app' => $config['app'],
+            'error' => 'Invalid or already-used code. Try the next code from your app, or a recovery code.',
+        ], null), 401);
     });
 
     $r->get('/logout', function () {
         Auth::logout();
         Response::redirect('/login');
+    });
+
+    // ---- SAML 2.0 SSO ----
+    $r->get('/auth/saml', function () use ($saml) {
+        if (!$saml->isConfigured()) {
+            Response::redirect('/login');
+        }
+        [$url, $requestId] = $saml->buildLoginRedirect('/');
+        $_SESSION['saml_request_id'] = $requestId;
+        Response::redirect($url);
+    });
+
+    $r->post('/auth/saml/acs', function (Request $req) use ($saml, $config, $loginView) {
+        if (!$saml->isConfigured()) {
+            Response::redirect('/login');
+        }
+        try {
+            $identity = $saml->consumeResponse(
+                (string) ($_POST['SAMLResponse'] ?? ''),
+                $_SESSION['saml_request_id'] ?? null
+            );
+        } catch (\RuntimeException $e) {
+            error_log('SAML login failed: ' . $e->getMessage());
+            $loginView('Single sign-on failed: ' . $e->getMessage(), 401);
+        }
+        unset($_SESSION['saml_request_id']);
+
+        $user = DB::selectOne('SELECT id, is_active FROM users WHERE email = ?', [$identity['email']]);
+        if ($user === null && $config['saml']['auto_provision']) {
+            $name = $identity['attributes']['displayName'][0]
+                ?? $identity['attributes']['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name'][0]
+                ?? $identity['email'];
+            $userId = DB::insert('users', [
+                'email' => $identity['email'],
+                'name' => $name,
+                'sso_provider' => 'saml',
+                'sso_subject' => $identity['name_id'],
+            ]);
+            DB::execute(
+                'INSERT IGNORE INTO user_roles (user_id, role_id, department_id)
+                 SELECT ?, id, NULL FROM roles WHERE code = ?',
+                [$userId, $config['saml']['default_role']]
+            );
+            $user = ['id' => $userId, 'is_active' => 1];
+        }
+        if ($user === null || (int) $user['is_active'] !== 1) {
+            $loginView('Single sign-on succeeded but no active account exists for '
+                . $identity['email'] . '. Ask an administrator to create one.', 403);
+        }
+        Auth::loginAs((int) $user['id'], 'saml');
+        $relay = (string) ($_POST['RelayState'] ?? '/');
+        Response::redirect(str_starts_with($relay, '/') && !str_starts_with($relay, '//') ? $relay : '/');
+    });
+
+    $r->get('/auth/saml/metadata', function () use ($saml) {
+        header('Content-Type: application/xml; charset=utf-8');
+        echo $saml->metadataXml();
+        exit;
+    });
+
+    // ---- Account security (MFA self-service, any authenticated user) ----
+    $requireLogin = function (): array {
+        $user = Auth::user();
+        if ($user === null) {
+            Response::redirect('/login');
+        }
+
+        return $user;
+    };
+
+    $r->get('/security', function (Request $req) use ($config, $requireLogin, $totp) {
+        $user = $requireLogin();
+        $row = DB::selectOne('SELECT mfa_enabled, mfa_recovery_codes FROM users WHERE id = ?', [(int) $user['id']]);
+
+        // Stage a fresh secret in the session until the user confirms a code.
+        $pendingSecret = null;
+        $pendingUri = null;
+        if ((int) $row['mfa_enabled'] !== 1) {
+            $pendingSecret = $_SESSION['mfa_setup_secret'] ??= $totp->generateSecret();
+            $pendingUri = $totp->provisioningUri($pendingSecret, (string) $user['email'], (string) $config['app']['name']);
+        }
+
+        Response::html(View::render('security', [
+            'app' => $config['app'],
+            'title' => 'Account Security',
+            'active' => 'security',
+            'term' => DB::selectOne('SELECT * FROM terms ORDER BY start_date DESC LIMIT 1') ?? ['id' => 0, 'name' => '—'],
+            'terms' => DB::select('SELECT id, code, name, status FROM terms ORDER BY start_date DESC'),
+            'user' => $user,
+            'mfaEnabled' => (int) $row['mfa_enabled'] === 1,
+            'recoveryCodesLeft' => count(json_decode((string) ($row['mfa_recovery_codes'] ?? '[]'), true) ?: []),
+            'pendingSecret' => $pendingSecret,
+            'pendingUri' => $pendingUri,
+            'flash' => $_SESSION['flash'] ?? null,
+            'newRecoveryCodes' => $_SESSION['new_recovery_codes'] ?? null,
+        ]));
+        unset($_SESSION['flash'], $_SESSION['new_recovery_codes']);
+    });
+
+    $r->post('/security/mfa/enable', function (Request $req) use ($requireLogin, $totp) {
+        $user = $requireLogin();
+        $secret = $_SESSION['mfa_setup_secret'] ?? null;
+        if ($secret === null || !$totp->verify($secret, (string) $req->input('code'))) {
+            $_SESSION['flash'] = ['type' => 'danger', 'text' => 'Code did not match — scan the QR again and enter the current code.'];
+            Response::redirect('/security');
+        }
+        $codes = $totp->generateRecoveryCodes();
+        DB::update('users', (int) $user['id'], [
+            'mfa_secret' => $secret,
+            'mfa_enabled' => 1,
+            'mfa_recovery_codes' => json_encode($codes['hashes']),
+            'mfa_last_counter' => null,
+        ]);
+        unset($_SESSION['mfa_setup_secret']);
+        $_SESSION['flash'] = ['type' => 'success', 'text' => 'Two-factor authentication is now enabled.'];
+        $_SESSION['new_recovery_codes'] = $codes['plain'];
+        \App\Core\Audit::log('mfa_enabled', 'user', (int) $user['id']);
+        Response::redirect('/security');
+    });
+
+    $r->post('/security/mfa/disable', function (Request $req) use ($requireLogin) {
+        $user = $requireLogin();
+        $row = DB::selectOne('SELECT password_hash FROM users WHERE id = ?', [(int) $user['id']]);
+        // Re-authenticate before weakening account security.
+        if (empty($row['password_hash'])
+            || !password_verify((string) $req->input('password'), (string) $row['password_hash'])) {
+            $_SESSION['flash'] = ['type' => 'danger', 'text' => 'Password confirmation failed — MFA unchanged.'];
+            Response::redirect('/security');
+        }
+        DB::update('users', (int) $user['id'], [
+            'mfa_secret' => null, 'mfa_enabled' => 0,
+            'mfa_recovery_codes' => null, 'mfa_last_counter' => null,
+        ]);
+        $_SESSION['flash'] = ['type' => 'warning', 'text' => 'Two-factor authentication has been disabled.'];
+        \App\Core\Audit::log('mfa_disabled', 'user', (int) $user['id']);
+        Response::redirect('/security');
     });
 
     $page = function (string $view, string $title, callable $data) use ($config, $currentTerm, $allTerms) {

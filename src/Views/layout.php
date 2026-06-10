@@ -48,8 +48,9 @@
           <?php endforeach; ?>
         </select>
       </form>
-      <span class="navbar-text text-light me-3 small"><i class="bi bi-person-circle me-1"></i><?= e($user['name'] ?? '') ?></span>
-      <a class="btn btn-outline-light btn-sm" href="/logout"><i class="bi bi-box-arrow-right"></i></a>
+      <span class="navbar-text text-light me-2 small"><i class="bi bi-person-circle me-1"></i><?= e($user['name'] ?? '') ?></span>
+      <a class="btn btn-outline-light btn-sm me-2" href="/security" title="Account security (MFA)"><i class="bi bi-shield-lock"></i></a>
+      <a class="btn btn-outline-light btn-sm" href="/logout" title="Sign out"><i class="bi bi-box-arrow-right"></i></a>
     </div>
   </div>
 </nav>

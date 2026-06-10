@@ -6,12 +6,33 @@
   Secure when served over HTTPS; session id regenerated on login (fixation protection).
 - **API tokens**: 32-byte random tokens issued at `/api/v1/auth/login`, stored as SHA-256
   hashes only, with expiry; sent via `Authorization: Bearer`.
-- **MFA**: `users.mfa_secret` / `mfa_enabled` columns are provisioned for TOTP; enable by
-  wiring a TOTP library (e.g. `spomky-labs/otphp`) into the login flow.
-- **SSO-ready**: `users.sso_provider` / `sso_subject` support Google, Microsoft, SAML and
-  LDAP/Active Directory identities; configure providers in `.env`
-  (`SSO_GOOGLE_*`, `SSO_MICROSOFT_*`, `SSO_SAML_ENABLED`, `LDAP_*`). Production SAML/OIDC
-  should use a maintained library (e.g. `onelogin/php-saml`, `league/oauth2-client`).
+- **MFA (TOTP)** — built in, dependency-free (`src/Services/TotpService.php`, RFC 6238,
+  SHA-1/6-digit/30 s, compatible with Google/Microsoft Authenticator, Authy, 1Password):
+  - Self-service enrollment at `/security`: QR provisioning, code confirmation before
+    activation, eight one-time recovery codes (bcrypt-hashed at rest, shown once).
+  - Login: password → `/mfa` challenge (web) or `otp` field on `POST /api/v1/auth/login`
+    (the API replies `401 {"details":{"code":"mfa_required"}}` when a code is needed).
+  - Replay protection: the last accepted TOTP time step is persisted
+    (`users.mfa_last_counter`) and codes at or before it are rejected; ±1 step drift window.
+  - Disabling MFA requires password re-confirmation; enable/disable/failed attempts and
+    recovery-code use are audit-logged.
+- **SAML 2.0 SSO** — built in, dependency-free SP (`src/Services/SamlService.php`):
+  - SP-initiated HTTP-Redirect AuthnRequest, HTTP-POST assertion consumption, SP metadata
+    at `/auth/saml/metadata`; tested patterns match Azure AD/Entra ID, Google Workspace,
+    Okta and ADFS defaults.
+  - Validation: XML-DSig (RSA-SHA256/384/512/SHA-1, exclusive C14N) of response and/or
+    assertion against the configured IdP certificate, reference-digest check, reference-URI
+    scope check, issuer, audience restriction, NotBefore/NotOnOrAfter (±120 s skew),
+    recipient and `InResponseTo` correlation; DTDs rejected (XXE hardening); encrypted
+    assertions are rejected with a clear error (disable encryption at the IdP or install
+    `onelogin/php-saml` for that case).
+  - Optional just-in-time provisioning (`SAML_AUTO_PROVISION`) with a configurable default
+    role; unknown users are otherwise refused with a clear message.
+  - Configure via `.env`: `SSO_SAML_ENABLED`, `SAML_IDP_ENTITY_ID`, `SAML_IDP_SSO_URL`,
+    `SAML_IDP_X509_CERT` (PEM or bare base64). For high-assurance deployments or exotic IdP
+    features, `onelogin/php-saml` can be swapped in behind the same interface.
+- **OAuth (Google/Microsoft) & LDAP**: `users.sso_provider`/`sso_subject` and `.env` keys
+  are provisioned; wire an OAuth client (`league/oauth2-client`) or LDAP bind as needed.
 
 ## Authorization (RBAC)
 

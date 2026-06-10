@@ -34,8 +34,11 @@
       </form>
       <hr>
       <div class="d-grid gap-2">
-        <button class="btn btn-outline-secondary btn-sm" disabled><i class="bi bi-microsoft me-1"></i>Sign in with Microsoft (configure SSO)</button>
-        <button class="btn btn-outline-secondary btn-sm" disabled><i class="bi bi-google me-1"></i>Sign in with Google (configure SSO)</button>
+        <?php if (!empty($samlEnabled)): ?>
+        <a class="btn btn-outline-primary btn-sm" href="/auth/saml"><i class="bi bi-building-lock me-1"></i>Sign in with institutional SSO (SAML)</a>
+        <?php else: ?>
+        <button class="btn btn-outline-secondary btn-sm" disabled><i class="bi bi-building-lock me-1"></i>Institutional SSO (enable SAML in .env)</button>
+        <?php endif; ?>
       </div>
       <p class="text-muted small text-center mt-3 mb-0">Demo login: admin@example.edu / Admin@12345</p>
     </div>

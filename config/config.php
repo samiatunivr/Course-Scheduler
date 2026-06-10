@@ -62,6 +62,18 @@ return [
         'smtp_username' => $env('SMTP_USERNAME', ''),
         'smtp_password' => $env('SMTP_PASSWORD', ''),
     ],
+    'saml' => [
+        'enabled' => filter_var($env('SSO_SAML_ENABLED', 'false'), FILTER_VALIDATE_BOOL),
+        'sp_entity_id' => $env('SAML_SP_ENTITY_ID',
+            rtrim((string) $env('APP_URL', 'http://localhost:8080'), '/') . '/auth/saml/metadata'),
+        'acs_url' => $env('SAML_ACS_URL',
+            rtrim((string) $env('APP_URL', 'http://localhost:8080'), '/') . '/auth/saml/acs'),
+        'idp_entity_id' => $env('SAML_IDP_ENTITY_ID', ''),
+        'idp_sso_url' => $env('SAML_IDP_SSO_URL', ''),
+        'idp_x509_cert' => $env('SAML_IDP_X509_CERT', ''),
+        'auto_provision' => filter_var($env('SAML_AUTO_PROVISION', 'false'), FILTER_VALIDATE_BOOL),
+        'default_role' => $env('SAML_DEFAULT_ROLE', 'viewer'),
+    ],
     'integrations' => [
         'slack_webhook' => $env('SLACK_WEBHOOK_URL', ''),
         'teams_webhook' => $env('TEAMS_WEBHOOK_URL', ''),

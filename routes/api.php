@@ -40,8 +40,18 @@ return function (Router $r, array $config): void {
     $r->post('/api/v1/auth/login', function (Request $req) {
         $email = (string) $req->input('email');
         $password = (string) $req->input('password');
-        if (!Auth::attempt($email, $password)) {
+        $result = Auth::attempt($email, $password);
+        if ($result === 'fail') {
             Response::error('Invalid credentials', 401);
+        }
+        if ($result === 'mfa') {
+            $otp = (string) $req->input('otp', '');
+            if ($otp === '') {
+                Response::error('MFA code required — retry with an "otp" field', 401, ['code' => 'mfa_required']);
+            }
+            if (!Auth::verifyMfa($otp)) {
+                Response::error('Invalid MFA code', 401, ['code' => 'mfa_invalid']);
+            }
         }
         $token = Auth::issueApiToken((int) Auth::id(), 'api-login', date('Y-m-d H:i:s', strtotime('+30 days')));
         Response::json(['token' => $token, 'user' => Auth::user(), 'permissions' => Auth::permissions()]);

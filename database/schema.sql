@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS users (
     sso_subject     VARCHAR(255) NULL,
     mfa_secret      VARCHAR(64)  NULL,
     mfa_enabled     TINYINT(1) NOT NULL DEFAULT 0,
+    mfa_recovery_codes JSON NULL,
+    mfa_last_counter   BIGINT NULL,
     is_active       TINYINT(1) NOT NULL DEFAULT 1,
     last_login_at   DATETIME NULL,
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

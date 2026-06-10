@@ -13,22 +13,85 @@ final class Auth
     private static ?array $user = null;
     private static ?array $permissions = null;
 
-    public static function attempt(string $email, string $password): bool
+    /**
+     * Password check. Returns 'ok' (logged in), 'mfa' (password correct,
+     * TOTP challenge pending — complete with verifyMfa()), or 'fail'.
+     */
+    public static function attempt(string $email, string $password): string
     {
         $user = Database::selectOne(
             'SELECT * FROM users WHERE email = ? AND is_active = 1 AND sso_provider = "local"',
             [$email]
         );
         if ($user === null || !password_verify($password, (string) $user['password_hash'])) {
+            return 'fail';
+        }
+
+        if ((int) $user['mfa_enabled'] === 1) {
+            $_SESSION['mfa_pending_user'] = (int) $user['id'];
+
+            return 'mfa';
+        }
+
+        self::finalizeLogin((int) $user['id'], 'password');
+
+        return 'ok';
+    }
+
+    /** Complete a pending MFA challenge with a TOTP code or a recovery code. */
+    public static function verifyMfa(string $code): bool
+    {
+        $userId = $_SESSION['mfa_pending_user'] ?? null;
+        if ($userId === null) {
+            return false;
+        }
+        $user = Database::selectOne('SELECT * FROM users WHERE id = ? AND is_active = 1', [(int) $userId]);
+        if ($user === null || (int) $user['mfa_enabled'] !== 1 || empty($user['mfa_secret'])) {
             return false;
         }
 
-        session_regenerate_id(true);
-        $_SESSION['user_id'] = (int) $user['id'];
-        Database::update('users', (int) $user['id'], ['last_login_at' => date('Y-m-d H:i:s')]);
-        Audit::log('login', 'user', (int) $user['id']);
+        $totp = new \App\Services\TotpService();
+        $usedCounter = null;
+        $lastCounter = $user['mfa_last_counter'] !== null ? (int) $user['mfa_last_counter'] : null;
+
+        if ($totp->verify((string) $user['mfa_secret'], $code, 1, $lastCounter, $usedCounter)) {
+            Database::update('users', (int) $userId, ['mfa_last_counter' => $usedCounter]);
+        } else {
+            // Fall back to one-time recovery codes.
+            $hashes = json_decode((string) ($user['mfa_recovery_codes'] ?? '[]'), true) ?: [];
+            $index = $totp->matchRecoveryCode($code, $hashes);
+            if ($index === null) {
+                Audit::log('mfa_failed', 'user', (int) $userId);
+
+                return false;
+            }
+            unset($hashes[$index]);
+            Database::update('users', (int) $userId, [
+                'mfa_recovery_codes' => json_encode(array_values($hashes)),
+            ]);
+            Audit::log('mfa_recovery_code_used', 'user', (int) $userId);
+        }
+
+        unset($_SESSION['mfa_pending_user']);
+        self::finalizeLogin((int) $userId, 'password+mfa');
 
         return true;
+    }
+
+    /** Finalize a login for an externally authenticated identity (SAML/OAuth). */
+    public static function loginAs(int $userId, string $provider): void
+    {
+        self::finalizeLogin($userId, $provider);
+    }
+
+    private static function finalizeLogin(int $userId, string $method): void
+    {
+        session_regenerate_id(true);
+        $_SESSION['user_id'] = $userId;
+        self::$user = null;
+        self::$permissions = null;
+        Database::update('users', $userId, ['last_login_at' => date('Y-m-d H:i:s')]);
+        Audit::log('login', 'user', $userId, null, ['method' => $method]);
     }
 
     public static function logout(): void
