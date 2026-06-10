@@ -38,9 +38,9 @@ OpenAI-compatible LLM integration. Runs on shared hosting (Hostinger Premium) �
 ## Quick start (development)
 
 ```bash
-cp .env.example .env            # set DB credentials (and AI_API_KEY for full LLM mode)
-php bin/migrate.php --seed      # creates schema + demo data
-php -S 0.0.0.0:8080 -t public public/router.php
+cp scheduler/.env.example scheduler/.env   # set DB credentials (and AI_API_KEY for full LLM mode)
+php scheduler/bin/migrate.php --seed       # creates schema + demo data
+php -S 0.0.0.0:8080 -t public_html public_html/router.php
 ```
 
 Open http://localhost:8080 — demo login `admin@example.edu` / `Admin@12345`
@@ -51,18 +51,22 @@ Composer is optional: the app runs dependency-free; installing
 
 ## Project layout
 
+Two top-level folders, matching the Hostinger convention (only `public_html/` is web-served;
+all application code, config and data live outside the web root):
+
 ```
-bin/                 CLI: migrations, scheduled report runner (cron)
-config/              Environment-driven configuration
-database/            schema.sql (DDL), seed.sql (demo data)
-docs/                ERD, API spec, architecture, security, deployment guide
-public/              Web root: front controller, .htaccess, JS/CSS assets
-routes/              web.php (UI pages), api.php (REST API v1)
-src/Core/            Micro-framework: router, DB, auth/RBAC, audit, views
-src/Services/        Scheduling engine, workload rules, AI, forecasting,
-                     exports, imports, notifications, workflow, scenarios
-src/Views/           Bootstrap 5 server-rendered templates
-storage/reports/     Generated scheduled reports (download center)
+public_html/                   Web root: front controller, .htaccess, JS/CSS assets
+scheduler/
+├── bin/                       CLI: migrations, scheduled report runner (cron)
+├── config/                    Environment-driven configuration (+ .env)
+├── database/                  schema.sql (DDL), seed.sql (demo data), upgrades/
+├── docs/                      ERD, API spec, architecture, security, deployment guide
+├── routes/                    web.php (UI pages), api.php (REST API v1)
+├── src/Core/                  Micro-framework: router, DB, auth/RBAC, tenancy, audit, views
+├── src/Services/              Scheduling engine, workload rules, AI, forecasting,
+│                              exports, imports, notifications, workflow, scenarios
+├── src/Views/                 Bootstrap 5 server-rendered templates
+└── storage/reports/           Generated scheduled reports (download center)
 ```
 
 ## Documentation

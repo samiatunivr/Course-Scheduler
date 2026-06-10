@@ -525,7 +525,10 @@ final class SchedulingEngine
 
     private function loadFacultyState(int $termId, ?int $departmentId, array $exclude, bool $replace): array
     {
-        $params = [$termId, $termId, $replace ? 'draft' : '__none__', $termId, Tenancy::requireId()];
+        // When replacing, draft sections are about to be deleted, so they must
+        // not count toward credit or contact load.
+        $excludedStatus = $replace ? 'draft' : '__none__';
+        $params = [$termId, $termId, $excludedStatus, $termId, $excludedStatus, Tenancy::requireId()];
         $deptFilter = ' AND f.tenant_id = ?';
         if ($departmentId !== null) {
             $deptFilter .= ' AND f.department_id = ?';
@@ -542,7 +545,7 @@ final class SchedulingEngine
                     COALESCE((SELECT SUM(c3.contact_hours) FROM sections s3
                               JOIN courses c3 ON c3.id = s3.course_id
                               WHERE s3.faculty_id = f.id AND s3.term_id = ?
-                                AND s3.status <> "cancelled"), 0) assigned_contact
+                                AND s3.status <> "cancelled" AND s3.status <> ?), 0) assigned_contact
              FROM faculty f
              WHERE f.status = "active"' . $deptFilter,
             $params

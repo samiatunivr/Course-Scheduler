@@ -227,15 +227,18 @@ JOIN (SELECT 'a.nguyen@example.edu' email, 'research_release' type, 'NSF Grant â
       SELECT 'l.khoury@example.edu', 'committee', 'Curriculum Committee', 1.0) w ON w.email = f.email
 WHERE NOT EXISTS (SELECT 1 FROM workload_activities wa WHERE wa.faculty_id = f.id AND wa.term_id = t.id);
 
--- Workload policies -------------------------------------------------------
-INSERT INTO workload_policies (department_id, contract_type, name, rule_type, rule_value, severity) VALUES
-(NULL, 'full_time', 'Full-time max teaching load', 'max_credit_hours', 12.0, 'error'),
-(NULL, 'full_time', 'Full-time min teaching load', 'min_credit_hours', 6.0, 'warning'),
-(NULL, 'full_time', 'Max contact hours', 'max_contact_hours', 16.0, 'error'),
-(NULL, 'adjunct',   'Adjunct credit-hour cap', 'adjunct_max_credit_hours', 9.0, 'error'),
-(NULL, 'any',       'Max distinct course preps', 'max_preps', 3.0, 'warning'),
-(NULL, 'any',       'Max overload hours above contract', 'max_overload_hours', 3.0, 'warning'),
-(NULL, 'any',       'Max consecutive teaching hours', 'max_consecutive_hours', 4.0, 'warning');
+-- Workload policies (idempotent: skipped when tenant 1 already has any) ----
+INSERT INTO workload_policies (department_id, contract_type, name, rule_type, rule_value, severity)
+SELECT * FROM (
+    SELECT NULL dept, 'full_time' ct, 'Full-time max teaching load' name, 'max_credit_hours' rt, 12.0 rv, 'error' sev UNION ALL
+    SELECT NULL, 'full_time', 'Full-time min teaching load', 'min_credit_hours', 6.0, 'warning' UNION ALL
+    SELECT NULL, 'full_time', 'Max contact hours', 'max_contact_hours', 16.0, 'error' UNION ALL
+    SELECT NULL, 'adjunct',   'Adjunct credit-hour cap', 'adjunct_max_credit_hours', 9.0, 'error' UNION ALL
+    SELECT NULL, 'any',       'Max distinct course preps', 'max_preps', 3.0, 'warning' UNION ALL
+    SELECT NULL, 'any',       'Max overload hours above contract', 'max_overload_hours', 3.0, 'warning' UNION ALL
+    SELECT NULL, 'any',       'Max consecutive teaching hours', 'max_consecutive_hours', 4.0, 'warning'
+) p
+WHERE NOT EXISTS (SELECT 1 FROM workload_policies WHERE tenant_id = 1);
 
 -- Enrollment history (for forecasting) -------------------------------------
 INSERT INTO enrollment_history (course_id, term_id, enrolled, waitlisted, sections_offered)

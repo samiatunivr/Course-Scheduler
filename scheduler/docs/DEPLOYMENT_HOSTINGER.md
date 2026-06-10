@@ -13,28 +13,26 @@ Apache + `.htaccess`, cron jobs — no Docker, no long-running processes.
 
 ## 2. Upload the application
 
-Recommended layout (keeps code outside the web root):
+The repository already mirrors the Hostinger account layout — exactly two folders:
 
 ```
-/home/u123456/
-├── scheduler/                 ← upload the whole repository here
+/home/u123456/domains/yourdomain.edu/
+├── scheduler/                 ← application code (NOT web-served)
 │   ├── bin/  config/  database/  docs/  routes/  src/  storage/
-│   ├── public/                ← only this folder is web-served
+│   ├── composer.json
 │   └── .env
-└── domains/yourdomain.edu/public_html  → point to scheduler/public (see below)
+└── public_html/               ← web root: index.php, router.php, .htaccess, assets/
 ```
 
-1. hPanel → **Files → File Manager** (or SFTP) → upload the repo to `~/scheduler`.
-2. Point the site at `public/`. Two options:
-   - **Subdomain document root**: hPanel → Domains → your domain → change document root to
-     `scheduler/public` (available on Premium for subdomains), or
-   - **public_html passthrough**: copy the contents of `public/` into `public_html/` and edit
-     `public_html/index.php` so `$root = '/home/u123456/scheduler';`.
-3. Ensure `storage/reports` is writable (755/775).
+1. hPanel → **Files → File Manager** (or SFTP) → upload the repo's `scheduler/` folder
+   next to `public_html/`, and the repo's `public_html/` contents into the existing
+   `public_html/` web root. No path edits are needed: `public_html/index.php` resolves
+   the application at `../scheduler` automatically.
+2. Ensure `scheduler/storage/reports` is writable (755/775).
 
 ## 3. Configure the environment
 
-Create `~/scheduler/.env` (copy from `.env.example`):
+Create `scheduler/.env` (copy from `scheduler/.env.example`):
 
 ```
 APP_ENV=production
@@ -58,7 +56,7 @@ hPanel → **Advanced → PHP Configuration**: select **PHP 8.4**, confirm exten
 SSH (hPanel → Advanced → SSH Access):
 
 ```bash
-cd ~/scheduler
+cd scheduler
 composer install --no-dev          # autoloader
 composer require phpoffice/phpspreadsheet dompdf/dompdf   # native .xlsx / .pdf exports
 ```
@@ -77,7 +75,7 @@ hPanel → **Advanced → Cron Jobs**:
 
 ```
 # Daily 06:00 — scheduled reports (conflicts, changes; weekly/monthly are self-gated)
-0 6 * * *  php /home/u123456/scheduler/bin/scheduled_reports.php
+0 6 * * *  php /home/u123456/domains/yourdomain.edu/scheduler/bin/scheduled_reports.php
 ```
 
 Insert rows into `scheduled_reports` (or via the Reports page/SQL) to define what runs
@@ -103,7 +101,7 @@ uses `CREATE TABLE IF NOT EXISTS`, so re-importing `schema.sql` is safe for new 
 | Symptom | Fix |
 |---|---|
 | 503 "Database connection failed" | Check `.env` DB credentials; DB host on Hostinger is usually `localhost` |
-| 404 on all routes | `.htaccess` not uploaded or `mod_rewrite` path wrong — confirm `public/.htaccess` exists |
-| API returns 401 with valid token | Ensure the Authorization-header rewrite block in `public/.htaccess` is present |
+| 404 on all routes | `.htaccess` not uploaded or `mod_rewrite` path wrong — confirm `public_html/.htaccess` exists |
+| API returns 401 with valid token | Ensure the Authorization-header rewrite block in `public_html/.htaccess` is present |
 | Exports download as `.xls` not `.xlsx` | Install `phpoffice/phpspreadsheet` (step 4) |
 | Emails not delivered | Configure SMTP_* in `.env` or use Hostinger's default mail with a domain-matching MAIL_FROM |
