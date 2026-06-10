@@ -24,7 +24,7 @@
         "sort-packages": true
     },
     "scripts": {
-        "serve": "php -S 0.0.0.0:8080 -t public public/router.php",
+        "serve": "php -S 0.0.0.0:8080 -t ../public_html ../public_html/router.php",
         "migrate": "php bin/migrate.php",
         "seed": "php bin/migrate.php --seed"
     }

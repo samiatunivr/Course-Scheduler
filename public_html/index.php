@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 /** Front controller — all requests route through here. */
 
-$root = dirname(__DIR__);
+// Application code lives outside the web root in ../scheduler
+$root = dirname(__DIR__) . '/scheduler';
 
 // PSR-4 autoload: composer if available, tiny fallback otherwise.
 if (is_file($root . '/vendor/autoload.php')) {

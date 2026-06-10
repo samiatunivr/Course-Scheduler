@@ -1,7 +1,7 @@
-/vendor/
-/.env
-/storage/reports/*
-!/storage/reports/.gitkeep
+scheduler/vendor/
+scheduler/.env
+scheduler/storage/reports/*
+!scheduler/storage/reports/.gitkeep
 *.log
 .DS_Store
 .idea/
