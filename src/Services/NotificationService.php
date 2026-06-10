@@ -51,14 +51,22 @@ final class NotificationService
         return $id;
     }
 
-    public function notifyRole(string $roleCode, string $type, string $title, string $body = '', array $channels = ['inapp']): void
+    /** Notify all users holding a role; scoped to one tenant (null = all tenants, cron only). */
+    public function notifyRole(string $roleCode, string $type, string $title, string $body = '', array $channels = ['inapp'], ?int $tenantId = null): void
     {
+        $tenantId ??= \App\Core\Tenancy::id();
+        $params = [$roleCode];
+        $tenantFilter = '';
+        if ($tenantId !== null) {
+            $tenantFilter = ' AND u.tenant_id = ?';
+            $params[] = $tenantId;
+        }
         $users = DB::select(
             'SELECT DISTINCT u.id FROM users u
              JOIN user_roles ur ON ur.user_id = u.id
              JOIN roles r ON r.id = ur.role_id
-             WHERE r.code = ? AND u.is_active = 1',
-            [$roleCode]
+             WHERE r.code = ? AND u.is_active = 1' . $tenantFilter,
+            $params
         );
         foreach ($users as $u) {
             $this->notify((int) $u['id'], $type, $title, $body, $channels);

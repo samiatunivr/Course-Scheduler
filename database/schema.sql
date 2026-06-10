@@ -7,11 +7,29 @@ SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
 
 -- ---------------------------------------------------------------------
+-- Multi-tenancy: each institution is a tenant; every root entity is
+-- scoped by tenant_id and uniqueness constraints are per-tenant.
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS tenants (
+    id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    code       VARCHAR(30) NOT NULL UNIQUE,
+    name       VARCHAR(200) NOT NULL,
+    domain     VARCHAR(255) NULL UNIQUE,            -- email domain for SSO tenant resolution
+    timezone   VARCHAR(64) NOT NULL DEFAULT 'UTC',
+    logo_url   VARCHAR(255) NULL,
+    settings   JSON NULL,
+    is_active  TINYINT(1) NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------------
 -- Identity, security & RBAC
 -- ---------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS users (
     id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    tenant_id       BIGINT UNSIGNED NOT NULL DEFAULT 1,
     email           VARCHAR(255) NOT NULL UNIQUE,
     name            VARCHAR(150) NOT NULL,
     password_hash   VARCHAR(255) NULL,
@@ -24,7 +42,9 @@ CREATE TABLE IF NOT EXISTS users (
     is_active       TINYINT(1) NOT NULL DEFAULT 1,
     last_login_at   DATETIME NULL,
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_users_tenant (tenant_id),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS roles (
@@ -71,6 +91,7 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 
 CREATE TABLE IF NOT EXISTS audit_logs (
     id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    tenant_id   BIGINT UNSIGNED NULL,               -- NULL only for pre-auth system events
     user_id     BIGINT UNSIGNED NULL,
     action      VARCHAR(80) NOT NULL,               -- create / update / delete / login / approve / export ...
     entity_type VARCHAR(80) NOT NULL,
@@ -81,7 +102,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     user_agent  VARCHAR(255) NULL,
     created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_audit_entity (entity_type, entity_id),
-    INDEX idx_audit_user (user_id, created_at)
+    INDEX idx_audit_user (user_id, created_at),
+    INDEX idx_audit_tenant (tenant_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
@@ -90,11 +112,14 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 CREATE TABLE IF NOT EXISTS campuses (
     id        BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    code      VARCHAR(20) NOT NULL UNIQUE,
+    tenant_id BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    code      VARCHAR(20) NOT NULL,
     name      VARCHAR(150) NOT NULL,
     address   VARCHAR(255) NULL,
     timezone  VARCHAR(64) NOT NULL DEFAULT 'UTC',
-    is_active TINYINT(1) NOT NULL DEFAULT 1
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    UNIQUE KEY uq_campus (tenant_id, code),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS buildings (
@@ -107,18 +132,24 @@ CREATE TABLE IF NOT EXISTS buildings (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS colleges (
-    id   BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    code VARCHAR(20) NOT NULL UNIQUE,
-    name VARCHAR(150) NOT NULL
+    id        BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    tenant_id BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    code      VARCHAR(20) NOT NULL,
+    name      VARCHAR(150) NOT NULL,
+    UNIQUE KEY uq_college (tenant_id, code),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS departments (
     id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    tenant_id  BIGINT UNSIGNED NOT NULL DEFAULT 1,
     college_id BIGINT UNSIGNED NULL,
-    code       VARCHAR(20) NOT NULL UNIQUE,
+    code       VARCHAR(20) NOT NULL,
     name       VARCHAR(150) NOT NULL,
     chair_user_id BIGINT UNSIGNED NULL,
     is_active  TINYINT(1) NOT NULL DEFAULT 1,
+    UNIQUE KEY uq_department (tenant_id, code),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id),
     FOREIGN KEY (college_id) REFERENCES colleges(id) ON DELETE SET NULL,
     FOREIGN KEY (chair_user_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -129,20 +160,26 @@ CREATE TABLE IF NOT EXISTS departments (
 
 CREATE TABLE IF NOT EXISTS academic_years (
     id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    name       VARCHAR(20) NOT NULL UNIQUE,         -- e.g. 2026-2027
+    tenant_id  BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    name       VARCHAR(20) NOT NULL,                -- e.g. 2026-2027
     start_date DATE NOT NULL,
-    end_date   DATE NOT NULL
+    end_date   DATE NOT NULL,
+    UNIQUE KEY uq_academic_year (tenant_id, name),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS terms (
     id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    tenant_id        BIGINT UNSIGNED NOT NULL DEFAULT 1,
     academic_year_id BIGINT UNSIGNED NOT NULL,
-    code             VARCHAR(20) NOT NULL UNIQUE,   -- e.g. FA2026
+    code             VARCHAR(20) NOT NULL,          -- e.g. FA2026
     name             VARCHAR(100) NOT NULL,         -- Fall 2026
     type             ENUM('semester','quarter','summer','mini','intersession') NOT NULL DEFAULT 'semester',
     start_date       DATE NOT NULL,
     end_date         DATE NOT NULL,
     status           ENUM('planning','draft','review','approved','published','archived') NOT NULL DEFAULT 'planning',
+    UNIQUE KEY uq_term (tenant_id, code),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id),
     FOREIGN KEY (academic_year_id) REFERENCES academic_years(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -159,11 +196,14 @@ CREATE TABLE IF NOT EXISTS calendar_events (
 -- Reusable meeting patterns, e.g. MWF 09:00-09:50, TR 13:00-14:15
 CREATE TABLE IF NOT EXISTS meeting_patterns (
     id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    code       VARCHAR(30) NOT NULL UNIQUE,
+    tenant_id  BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    code       VARCHAR(30) NOT NULL,
     days       SET('Mon','Tue','Wed','Thu','Fri','Sat','Sun') NOT NULL,
     start_time TIME NOT NULL,
     end_time   TIME NOT NULL,
-    minutes_per_week SMALLINT UNSIGNED NOT NULL DEFAULT 150
+    minutes_per_week SMALLINT UNSIGNED NOT NULL DEFAULT 150,
+    UNIQUE KEY uq_pattern (tenant_id, code),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------
@@ -172,8 +212,9 @@ CREATE TABLE IF NOT EXISTS meeting_patterns (
 
 CREATE TABLE IF NOT EXISTS courses (
     id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    tenant_id     BIGINT UNSIGNED NOT NULL DEFAULT 1,
     department_id BIGINT UNSIGNED NOT NULL,
-    code          VARCHAR(20) NOT NULL UNIQUE,      -- CSC301
+    code          VARCHAR(20) NOT NULL,             -- CSC301
     title         VARCHAR(200) NOT NULL,
     description   TEXT NULL,
     credit_hours  DECIMAL(4,1) NOT NULL DEFAULT 3.0,
@@ -184,6 +225,8 @@ CREATE TABLE IF NOT EXISTS courses (
     required_equipment JSON NULL,                   -- ["projector","lab-pcs"]
     is_core       TINYINT(1) NOT NULL DEFAULT 0,    -- core curriculum flag
     is_active     TINYINT(1) NOT NULL DEFAULT 1,
+    UNIQUE KEY uq_course (tenant_id, code),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id),
     FOREIGN KEY (department_id) REFERENCES departments(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -207,9 +250,12 @@ CREATE TABLE IF NOT EXISTS course_cross_listings (
 -- Academic programs / majors (for student pathway conflict checking)
 CREATE TABLE IF NOT EXISTS programs (
     id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    tenant_id     BIGINT UNSIGNED NOT NULL DEFAULT 1,
     department_id BIGINT UNSIGNED NOT NULL,
-    code          VARCHAR(20) NOT NULL UNIQUE,
+    code          VARCHAR(20) NOT NULL,
     name          VARCHAR(200) NOT NULL,
+    UNIQUE KEY uq_program (tenant_id, code),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id),
     FOREIGN KEY (department_id) REFERENCES departments(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -231,12 +277,13 @@ CREATE TABLE IF NOT EXISTS program_courses (
 
 CREATE TABLE IF NOT EXISTS faculty (
     id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    tenant_id     BIGINT UNSIGNED NOT NULL DEFAULT 1,
     user_id       BIGINT UNSIGNED NULL,
     department_id BIGINT UNSIGNED NOT NULL,
-    employee_no   VARCHAR(30) NULL UNIQUE,
+    employee_no   VARCHAR(30) NULL,
     first_name    VARCHAR(80) NOT NULL,
     last_name     VARCHAR(80) NOT NULL,
-    email         VARCHAR(255) NOT NULL UNIQUE,
+    email         VARCHAR(255) NOT NULL,
     rank          ENUM('professor','associate_professor','assistant_professor','senior_lecturer','lecturer','instructor','adjunct','emeritus','ta') NOT NULL DEFAULT 'lecturer',
     contract_type ENUM('full_time','part_time','adjunct','visiting','ta') NOT NULL DEFAULT 'full_time',
     status        ENUM('active','sabbatical','leave','retired','resigned') NOT NULL DEFAULT 'active',
@@ -250,6 +297,9 @@ CREATE TABLE IF NOT EXISTS faculty (
     research_interests JSON NULL,
     preferences     JSON NULL,                      -- {"preferred_days":["Mon","Wed"],"avoid_early":true}
     hired_at      DATE NULL,
+    UNIQUE KEY uq_faculty_email (tenant_id, email),
+    UNIQUE KEY uq_faculty_empno (tenant_id, employee_no),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
     FOREIGN KEY (department_id) REFERENCES departments(id) ON DELETE CASCADE,
     INDEX idx_faculty_dept (department_id, status)
@@ -298,14 +348,17 @@ CREATE TABLE IF NOT EXISTS workload_activities (
 
 CREATE TABLE IF NOT EXISTS rooms (
     id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    tenant_id   BIGINT UNSIGNED NOT NULL DEFAULT 1,
     building_id BIGINT UNSIGNED NULL,               -- NULL for virtual/online rooms
-    code        VARCHAR(30) NOT NULL UNIQUE,
+    code        VARCHAR(30) NOT NULL,
     name        VARCHAR(150) NOT NULL,
     type        ENUM('classroom','laboratory','auditorium','seminar','online','hybrid') NOT NULL DEFAULT 'classroom',
     capacity    SMALLINT UNSIGNED NOT NULL DEFAULT 30,
     equipment   JSON NULL,                          -- ["projector","whiteboard","lab-pcs"]
     accessibility JSON NULL,                        -- ["wheelchair","hearing-loop"]
     is_active   TINYINT(1) NOT NULL DEFAULT 1,
+    UNIQUE KEY uq_room (tenant_id, code),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id),
     FOREIGN KEY (building_id) REFERENCES buildings(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -326,6 +379,7 @@ CREATE TABLE IF NOT EXISTS room_closures (
 
 CREATE TABLE IF NOT EXISTS sections (
     id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    tenant_id     BIGINT UNSIGNED NOT NULL DEFAULT 1,
     course_id     BIGINT UNSIGNED NOT NULL,
     term_id       BIGINT UNSIGNED NOT NULL,
     campus_id     BIGINT UNSIGNED NULL,
@@ -340,6 +394,7 @@ CREATE TABLE IF NOT EXISTS sections (
     created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uq_section (course_id, term_id, section_no),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id),
     FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE,
     FOREIGN KEY (term_id) REFERENCES terms(id) ON DELETE CASCADE,
     FOREIGN KEY (campus_id) REFERENCES campuses(id) ON DELETE SET NULL,
@@ -397,6 +452,7 @@ CREATE TABLE IF NOT EXISTS enrollment_forecasts (
 
 CREATE TABLE IF NOT EXISTS workload_policies (
     id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    tenant_id     BIGINT UNSIGNED NOT NULL DEFAULT 1,
     department_id BIGINT UNSIGNED NULL,             -- NULL = institution-wide
     contract_type ENUM('full_time','part_time','adjunct','visiting','ta','any') NOT NULL DEFAULT 'any',
     name          VARCHAR(150) NOT NULL,
@@ -404,6 +460,7 @@ CREATE TABLE IF NOT EXISTS workload_policies (
     rule_value    DECIMAL(6,1) NOT NULL,
     severity      ENUM('error','warning','info') NOT NULL DEFAULT 'error',
     is_active     TINYINT(1) NOT NULL DEFAULT 1,
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id),
     FOREIGN KEY (department_id) REFERENCES departments(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -518,6 +575,7 @@ CREATE TABLE IF NOT EXISTS notifications (
 
 CREATE TABLE IF NOT EXISTS scheduled_reports (
     id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    tenant_id  BIGINT UNSIGNED NOT NULL DEFAULT 1,
     name       VARCHAR(150) NOT NULL,
     report_key VARCHAR(80) NOT NULL,                -- conflicts | workload | utilization | executive | forecast | changes
     frequency  ENUM('daily','weekly','monthly') NOT NULL,
@@ -553,6 +611,7 @@ CREATE TABLE IF NOT EXISTS custom_reports (
 -- Bulk import tracking (validation, preview, rollback)
 CREATE TABLE IF NOT EXISTS import_batches (
     id           BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    tenant_id    BIGINT UNSIGNED NOT NULL DEFAULT 1,
     user_id      BIGINT UNSIGNED NOT NULL,
     entity_type  VARCHAR(50) NOT NULL,              -- faculty | courses | rooms | schedules | enrollment
     file_name    VARCHAR(255) NOT NULL,

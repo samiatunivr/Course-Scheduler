@@ -1,5 +1,28 @@
 # Security Architecture & Compliance
 
+## Multi-tenancy & isolation
+
+The platform is multi-tenant: each institution is a row in `tenants`, and every root
+entity (users, campuses, colleges, departments, terms, courses, programs, faculty, rooms,
+sections, meeting patterns, policies, imports, scheduled reports, audit logs) carries a
+`tenant_id` with per-tenant unique keys (two institutions can both have a `CSC101`).
+
+Isolation is enforced server-side on every path:
+
+- The tenant context (`App\Core\Tenancy`) derives **only from the authenticated user** —
+  never from client input, hostnames or request parameters.
+- Every list/aggregate query filters by `tenant_id`; every id taken from a URL or request
+  body is checked with `Tenancy::assertOwns(table, id)` before use. Cross-tenant ids
+  return **404** (indistinguishable from non-existent) and the attempt is recorded in the
+  audit log as `cross_tenant_denied`.
+- The AI assistant, scheduling engine, analytics, exports and imports all operate inside
+  the tenant context; generated sections, imported rows and reports are stamped with the
+  tenant id explicitly (never relying on column defaults).
+- CLI jobs (scheduled reports) iterate tenants explicitly via `Tenancy::actAs()`, which is
+  restricted to `php-cli`.
+- SAML just-in-time provisioning maps users to a tenant by email domain
+  (`tenants.domain`); unknown domains are refused.
+
 ## Authentication
 
 - **Local accounts**: bcrypt (cost 12) password hashes; sessions are HTTP-only, SameSite=Lax,
@@ -50,9 +73,21 @@ Workflow steps enforce step-specific permissions (publishing requires `schedule.
 
 ## Audit & activity tracking
 
-`audit_logs` records every state-changing action (create/update/cancel/approve/export/import/
-login) with user, entity, old/new values (JSON), IP and user agent. Approval workflows keep
-their own per-step trail in `approval_actions`. Audit writes never block the main flow.
+`audit_logs` records every state-changing action with tenant, user, entity, old/new values
+(JSON), IP address and user agent. Recorded events include:
+
+- authentication: `login` (with method: password / password+mfa / saml), `login_failed`,
+  `logout`, `mfa_enabled`, `mfa_disabled`, `mfa_failed`, `mfa_recovery_code_used`
+- scheduling: section create/update/cancel, meeting moves (drag-and-drop),
+  `generate_schedule`, `detect_conflicts`, scenario simulate/apply
+- governance: workflow advance/reject/publish, workload activity changes
+- data: `export` (report name, format, row count), `import_commit`, `import_rollback`
+- security: `cross_tenant_denied` access attempts
+
+Administrators view the trail at `/audit` (filter by action/entity) or
+`GET /api/v1/audit-logs` — both strictly tenant-scoped behind the `admin.audit`
+permission. Approval workflows additionally keep a per-step trail in `approval_actions`.
+Audit writes never block the main flow.
 
 ## Application hardening
 

@@ -64,6 +64,10 @@ $request = new Request();
 
 try {
     $router->dispatch($request);
+} catch (\App\Core\NotFoundForTenantException $e) {
+    $request->wantsJson()
+        ? Response::error($e->getMessage(), 404)
+        : Response::html(View::render('errors/404', [], null), 404);
 } catch (\Throwable $e) {
     error_log($e->getMessage() . "\n" . $e->getTraceAsString());
     $detail = $config['app']['debug'] ? $e->getMessage() : 'Internal server error';

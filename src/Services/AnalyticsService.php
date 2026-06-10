@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Core\Database as DB;
+use App\Core\Tenancy;
 
 /** Dashboard KPIs: scheduling, workload, enrollment, utilization. */
 final class AnalyticsService
@@ -36,10 +37,10 @@ final class AnalyticsService
         ) ?? [];
 
         $unscheduledCourses = DB::selectOne(
-            'SELECT COUNT(*) n FROM courses c WHERE c.is_active = 1
+            'SELECT COUNT(*) n FROM courses c WHERE c.is_active = 1 AND c.tenant_id = ?
                AND NOT EXISTS (SELECT 1 FROM sections s WHERE s.course_id = c.id AND s.term_id = ?
                                AND s.status <> "cancelled")',
-            [$termId]
+            [Tenancy::requireId(), $termId]
         );
 
         $total = (int) ($sections['total'] ?? 0);
@@ -71,9 +72,9 @@ final class AnalyticsService
              FROM rooms r
              LEFT JOIN section_meetings m ON m.room_id = r.id
              LEFT JOIN sections s ON s.id = m.section_id AND s.term_id = ? AND s.status <> "cancelled"
-             WHERE r.is_active = 1
+             WHERE r.is_active = 1 AND r.tenant_id = ?
              GROUP BY r.id ORDER BY used_hours DESC',
-            [$termId]
+            [$termId, Tenancy::requireId()]
         );
         foreach ($rows as &$r) {
             $r['used_hours'] = round((float) $r['used_hours'], 1);
@@ -135,7 +136,7 @@ final class AnalyticsService
 
     public function enrollmentTrends(?int $courseId = null): array
     {
-        $params = [];
+        $params = [Tenancy::requireId()];
         $filter = '';
         if ($courseId !== null) {
             $filter = ' AND eh.course_id = ?';
@@ -147,7 +148,7 @@ final class AnalyticsService
              FROM enrollment_history eh
              JOIN terms t ON t.id = eh.term_id
              JOIN courses c ON c.id = eh.course_id
-             WHERE 1=1' . $filter . '
+             WHERE c.tenant_id = ?' . $filter . '
              ORDER BY t.start_date, c.code',
             $params
         );

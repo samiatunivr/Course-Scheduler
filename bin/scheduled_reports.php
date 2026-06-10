@@ -47,18 +47,23 @@ $due = DB::select(
      WHERE is_active = 1 AND (next_run_at IS NULL OR next_run_at <= NOW())'
 );
 
-$term = DB::selectOne(
-    'SELECT id, name FROM terms WHERE status IN ("draft","review","approved","published")
-     ORDER BY start_date DESC LIMIT 1'
-);
-if ($term === null) {
-    echo "No active term — nothing to report.\n";
-    exit(0);
-}
-$termId = (int) $term['id'];
-
 foreach ($due as $report) {
-    echo "Running: {$report['name']} ({$report['report_key']})\n";
+    // Each report runs inside its own tenant's context against that
+    // tenant's most recent active term.
+    \App\Core\Tenancy::actAs((int) $report['tenant_id']);
+    $term = DB::selectOne(
+        'SELECT id, name FROM terms
+         WHERE tenant_id = ? AND status IN ("draft","review","approved","published")
+         ORDER BY start_date DESC LIMIT 1',
+        [(int) $report['tenant_id']]
+    );
+    if ($term === null) {
+        echo "Skipping {$report['name']}: tenant has no active term.\n";
+        continue;
+    }
+    $termId = (int) $term['id'];
+
+    echo "Running: {$report['name']} ({$report['report_key']}, tenant {$report['tenant_id']})\n";
 
     $rows = match ($report['report_key']) {
         'conflicts' => $export->conflictsDataset($termId),

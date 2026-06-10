@@ -10,6 +10,7 @@ declare(strict_types=1);
 use App\Core\Auth;
 use App\Core\Audit;
 use App\Core\Database as DB;
+use App\Core\Tenancy;
 use App\Core\Request;
 use App\Core\Response;
 use App\Core\Router;
@@ -61,50 +62,61 @@ return function (Router $r, array $config): void {
         Response::json(['user' => Auth::user(), 'permissions' => Auth::permissions()]);
     }, 'schedule.view');
 
-    // ---------------- Reference data ----------------
+    // Every term-scoped route must call this on the path's termId before
+    // touching data — cross-tenant ids surface as 404.
+    $assertTerm = fn (Request $req) => Tenancy::assertOwns('terms', (int) $req->param('termId'));
+
+    // ---------------- Reference data (always tenant-scoped) ----------------
     $r->get('/api/v1/terms', function () {
-        Response::json(DB::select('SELECT * FROM terms ORDER BY start_date DESC'));
+        Response::json(DB::select(
+            'SELECT * FROM terms WHERE tenant_id = ? ORDER BY start_date DESC', [Tenancy::requireId()]));
     }, 'schedule.view');
 
     $r->get('/api/v1/departments', function () {
-        Response::json(DB::select('SELECT * FROM departments WHERE is_active = 1 ORDER BY code'));
+        Response::json(DB::select(
+            'SELECT * FROM departments WHERE is_active = 1 AND tenant_id = ? ORDER BY code',
+            [Tenancy::requireId()]));
     }, 'schedule.view');
 
     $r->get('/api/v1/courses', function (Request $req) {
         $deptId = $req->query['department_id'] ?? null;
         $rows = $deptId !== null
-            ? DB::select('SELECT * FROM courses WHERE is_active = 1 AND department_id = ? ORDER BY code', [(int) $deptId])
-            : DB::select('SELECT * FROM courses WHERE is_active = 1 ORDER BY code');
+            ? DB::select('SELECT * FROM courses WHERE is_active = 1 AND tenant_id = ? AND department_id = ? ORDER BY code',
+                [Tenancy::requireId(), (int) $deptId])
+            : DB::select('SELECT * FROM courses WHERE is_active = 1 AND tenant_id = ? ORDER BY code',
+                [Tenancy::requireId()]);
         Response::json($rows);
     }, 'schedule.view');
 
     $r->get('/api/v1/rooms', function () {
         Response::json(DB::select(
             'SELECT r.*, b.code building FROM rooms r LEFT JOIN buildings b ON b.id = r.building_id
-             WHERE r.is_active = 1 ORDER BY r.code'
+             WHERE r.is_active = 1 AND r.tenant_id = ? ORDER BY r.code',
+            [Tenancy::requireId()]
         ));
     }, 'rooms.view');
 
     $r->get('/api/v1/meeting-patterns', function () {
-        Response::json(DB::select('SELECT * FROM meeting_patterns ORDER BY days, start_time'));
+        Response::json(DB::select(
+            'SELECT * FROM meeting_patterns WHERE tenant_id = ? ORDER BY days, start_time',
+            [Tenancy::requireId()]));
     }, 'schedule.view');
 
     // ---------------- Faculty ----------------
     $r->get('/api/v1/faculty', function (Request $req) {
         $deptId = $req->query['department_id'] ?? null;
-        $sql = 'SELECT f.*, d.code department FROM faculty f JOIN departments d ON d.id = f.department_id';
+        $sql = 'SELECT f.*, d.code department FROM faculty f JOIN departments d ON d.id = f.department_id
+                WHERE f.tenant_id = ?';
         $rows = $deptId !== null
-            ? DB::select($sql . ' WHERE f.department_id = ? ORDER BY f.last_name', [(int) $deptId])
-            : DB::select($sql . ' ORDER BY f.last_name');
+            ? DB::select($sql . ' AND f.department_id = ? ORDER BY f.last_name', [Tenancy::requireId(), (int) $deptId])
+            : DB::select($sql . ' ORDER BY f.last_name', [Tenancy::requireId()]);
         Response::json($rows);
     }, 'faculty.view');
 
     $r->get('/api/v1/faculty/{id}', function (Request $req) {
         $id = (int) $req->param('id');
+        Tenancy::assertOwns('faculty', $id);
         $faculty = DB::selectOne('SELECT * FROM faculty WHERE id = ?', [$id]);
-        if ($faculty === null) {
-            Response::error('Faculty not found', 404);
-        }
         $faculty['availability'] = DB::select(
             'SELECT day, start_time, end_time, preference FROM faculty_availability WHERE faculty_id = ?', [$id]);
         $faculty['course_qualifications'] = DB::select(
@@ -124,17 +136,20 @@ return function (Router $r, array $config): void {
                 Response::error("Missing field: $f", 422);
             }
         }
-        $id = DB::insert('faculty', array_intersect_key($req->body, array_flip([
-            'department_id', 'first_name', 'last_name', 'email', 'rank', 'contract_type',
-            'max_credit_hours', 'min_credit_hours', 'max_contact_hours',
-            'research_release_hours', 'admin_release_hours',
-        ])));
+        Tenancy::assertOwns('departments', $req->int('department_id'));
+        $id = DB::insert('faculty', ['tenant_id' => Tenancy::requireId()]
+            + array_intersect_key($req->body, array_flip([
+                'department_id', 'first_name', 'last_name', 'email', 'rank', 'contract_type',
+                'max_credit_hours', 'min_credit_hours', 'max_contact_hours',
+                'research_release_hours', 'admin_release_hours',
+            ])));
         Audit::log('create', 'faculty', $id, null, $req->body);
         Response::json(['id' => $id], 201);
     }, 'faculty.edit');
 
     // ---------------- Sections & schedule ----------------
-    $r->get('/api/v1/terms/{termId}/sections', function (Request $req) {
+    $r->get('/api/v1/terms/{termId}/sections', function (Request $req) use ($assertTerm) {
+        $assertTerm($req);
         Response::json(DB::select(
             'SELECT s.id, s.section_no, s.status, s.capacity, s.enrolled, s.waitlisted, s.delivery_mode,
                     c.code course, c.title, c.credit_hours, c.department_id,
@@ -157,7 +172,18 @@ return function (Router $r, array $config): void {
                 Response::error("Missing field: $f", 422);
             }
         }
+        Tenancy::assertOwns('courses', $req->int('course_id'));
+        Tenancy::assertOwns('terms', $req->int('term_id'));
+        if ($req->input('faculty_id')) {
+            Tenancy::assertOwns('faculty', $req->int('faculty_id'));
+        }
+        foreach ((array) $req->input('meetings', []) as $m) {
+            if (!empty($m['room_id'])) {
+                Tenancy::assertOwns('rooms', (int) $m['room_id']);
+            }
+        }
         $id = DB::insert('sections', [
+            'tenant_id' => Tenancy::requireId(),
             'course_id' => $req->int('course_id'),
             'term_id' => $req->int('term_id'),
             'section_no' => (string) $req->input('section_no', '01'),
@@ -182,13 +208,14 @@ return function (Router $r, array $config): void {
 
     $r->put('/api/v1/sections/{id}', function (Request $req) use ($notifier) {
         $id = (int) $req->param('id');
+        Tenancy::assertOwns('sections', $id);
         $old = DB::selectOne('SELECT * FROM sections WHERE id = ?', [$id]);
-        if ($old === null) {
-            Response::error('Section not found', 404);
-        }
         $fields = array_intersect_key($req->body, array_flip([
             'faculty_id', 'capacity', 'status', 'delivery_mode', 'notes', 'section_no',
         ]));
+        if (!empty($fields['faculty_id'])) {
+            Tenancy::assertOwns('faculty', (int) $fields['faculty_id']);
+        }
         if ($fields !== []) {
             DB::update('sections', $id, $fields);
         }
@@ -214,7 +241,11 @@ return function (Router $r, array $config): void {
         if ($old === null) {
             Response::error('Meeting not found', 404);
         }
+        Tenancy::assertOwns('sections', (int) $old['section_id']);
         $fields = array_intersect_key($req->body, array_flip(['day', 'start_time', 'end_time', 'room_id']));
+        if (!empty($fields['room_id'])) {
+            Tenancy::assertOwns('rooms', (int) $fields['room_id']);
+        }
         if ($fields !== []) {
             DB::update('section_meetings', $id, $fields);
         }
@@ -229,17 +260,19 @@ return function (Router $r, array $config): void {
 
     $r->delete('/api/v1/sections/{id}', function (Request $req) {
         $id = (int) $req->param('id');
+        Tenancy::assertOwns('sections', $id);
         $old = DB::selectOne('SELECT * FROM sections WHERE id = ?', [$id]);
-        if ($old === null) {
-            Response::error('Section not found', 404);
-        }
         DB::update('sections', $id, ['status' => 'cancelled']);
         Audit::log('cancel', 'section', $id, $old);
         Response::json(['cancelled' => true]);
     }, 'schedule.edit');
 
     // ---------------- AI engine ----------------
-    $r->post('/api/v1/terms/{termId}/generate', function (Request $req) use ($engine) {
+    $r->post('/api/v1/terms/{termId}/generate', function (Request $req) use ($engine, $assertTerm) {
+        $assertTerm($req);
+        if ($req->input('department_id')) {
+            Tenancy::assertOwns('departments', $req->int('department_id'));
+        }
         Response::json($engine->generateSchedule(
             (int) $req->param('termId'),
             $req->input('department_id') ? $req->int('department_id') : null,
@@ -251,30 +284,35 @@ return function (Router $r, array $config): void {
         ));
     }, 'schedule.generate');
 
-    $r->post('/api/v1/terms/{termId}/detect-conflicts', function (Request $req) use ($engine) {
+    $r->post('/api/v1/terms/{termId}/detect-conflicts', function (Request $req) use ($engine, $assertTerm) {
+        $assertTerm($req);
         $conflicts = $engine->detectConflicts((int) $req->param('termId'));
         Response::json(['count' => count($conflicts), 'conflicts' => $conflicts]);
     }, 'schedule.view');
 
-    $r->get('/api/v1/terms/{termId}/conflicts', function (Request $req) {
+    $r->get('/api/v1/terms/{termId}/conflicts', function (Request $req) use ($assertTerm) {
+        $assertTerm($req);
         Response::json(DB::select(
             'SELECT * FROM schedule_conflicts WHERE term_id = ? AND status = "open" ORDER BY severity, type',
             [(int) $req->param('termId')]
         ));
     }, 'schedule.view');
 
-    $r->post('/api/v1/terms/{termId}/recommendations', function (Request $req) use ($ai) {
+    $r->post('/api/v1/terms/{termId}/recommendations', function (Request $req) use ($ai, $assertTerm) {
+        $assertTerm($req);
         Response::json($ai->generateRecommendations((int) $req->param('termId')));
     }, 'schedule.generate');
 
-    $r->get('/api/v1/terms/{termId}/recommendations', function (Request $req) {
+    $r->get('/api/v1/terms/{termId}/recommendations', function (Request $req) use ($assertTerm) {
+        $assertTerm($req);
         Response::json(DB::select(
             'SELECT * FROM ai_recommendations WHERE term_id = ? AND status = "open" ORDER BY category',
             [(int) $req->param('termId')]
         ));
     }, 'schedule.view');
 
-    $r->post('/api/v1/terms/{termId}/forecast', function (Request $req) use ($forecast) {
+    $r->post('/api/v1/terms/{termId}/forecast', function (Request $req) use ($forecast, $assertTerm) {
+        $assertTerm($req);
         Response::json($forecast->forecastTerm((int) $req->param('termId')));
     }, 'schedule.generate');
 
@@ -285,22 +323,28 @@ return function (Router $r, array $config): void {
         }
         $sessionId = (string) $req->input('session_id', session_id() ?: 'default');
         $termId = $req->int('term_id');
+        if ($termId > 0) {
+            Tenancy::assertOwns('terms', $termId);
+        }
         Response::json($ai->chat($message, $sessionId, $termId));
     }, 'ai.chat');
 
     // ---------------- Workload ----------------
-    $r->get('/api/v1/terms/{termId}/workloads', function (Request $req) use ($workload) {
+    $r->get('/api/v1/terms/{termId}/workloads', function (Request $req) use ($workload, $assertTerm) {
+        $assertTerm($req);
         Response::json($workload->facultyWorkloads(
             (int) $req->param('termId'),
             $req->input('department_id') ? $req->int('department_id') : null
         ));
     }, 'workload.view');
 
-    $r->get('/api/v1/terms/{termId}/workloads/analytics', function (Request $req) use ($workload) {
+    $r->get('/api/v1/terms/{termId}/workloads/analytics', function (Request $req) use ($workload, $assertTerm) {
+        $assertTerm($req);
         Response::json($workload->departmentAnalytics((int) $req->param('termId')));
     }, 'workload.view');
 
-    $r->get('/api/v1/terms/{termId}/workloads/rebalance', function (Request $req) use ($workload) {
+    $r->get('/api/v1/terms/{termId}/workloads/rebalance', function (Request $req) use ($workload, $assertTerm) {
+        $assertTerm($req);
         Response::json($workload->rebalancingSuggestions((int) $req->param('termId')));
     }, 'workload.view');
 
@@ -310,6 +354,8 @@ return function (Router $r, array $config): void {
                 Response::error("Missing field: $f", 422);
             }
         }
+        Tenancy::assertOwns('faculty', $req->int('faculty_id'));
+        Tenancy::assertOwns('terms', $req->int('term_id'));
         $id = DB::insert('workload_activities', [
             'faculty_id' => $req->int('faculty_id'),
             'term_id' => $req->int('term_id'),
@@ -322,7 +368,8 @@ return function (Router $r, array $config): void {
     }, 'workload.edit');
 
     // ---------------- Analytics ----------------
-    $r->get('/api/v1/terms/{termId}/kpis', function (Request $req) use ($analytics) {
+    $r->get('/api/v1/terms/{termId}/kpis', function (Request $req) use ($analytics, $assertTerm) {
+        $assertTerm($req);
         $termId = (int) $req->param('termId');
         Response::json([
             'scheduling' => $analytics->schedulingKpis($termId),
@@ -333,6 +380,9 @@ return function (Router $r, array $config): void {
     }, 'reports.view');
 
     $r->get('/api/v1/enrollment/trends', function (Request $req) use ($analytics) {
+        if ($req->input('course_id')) {
+            Tenancy::assertOwns('courses', $req->int('course_id'));
+        }
         Response::json($analytics->enrollmentTrends(
             $req->input('course_id') ? $req->int('course_id') : null
         ));
@@ -344,6 +394,13 @@ return function (Router $r, array $config): void {
         $termId = $req->int('term_id');
         if ($termId === 0) {
             Response::error('term_id query parameter is required', 422);
+        }
+        Tenancy::assertOwns('terms', $termId);
+        if ($req->input('department_id')) {
+            Tenancy::assertOwns('departments', $req->int('department_id'));
+        }
+        if ($req->input('faculty_id')) {
+            Tenancy::assertOwns('faculty', $req->int('faculty_id'));
         }
         $term = DB::selectOne('SELECT name FROM terms WHERE id = ?', [$termId]);
         $meta = ['term' => $term['name'] ?? $termId];
@@ -376,6 +433,7 @@ return function (Router $r, array $config): void {
 
     $r->post('/api/v1/import/batches/{id}/commit', function (Request $req) use ($import) {
         $batchId = (int) $req->param('id');
+        Tenancy::assertOwns('import_batches', $batchId);
         $validRows = $_SESSION['import_' . $batchId] ?? null;
         if ($validRows === null) {
             Response::error('Validated rows expired — re-upload the file', 410);
@@ -386,11 +444,13 @@ return function (Router $r, array $config): void {
     }, 'imports.run');
 
     $r->post('/api/v1/import/batches/{id}/rollback', function (Request $req) use ($import) {
+        Tenancy::assertOwns('import_batches', (int) $req->param('id'));
         Response::json(['deleted' => $import->rollback((int) $req->param('id'))]);
     }, 'imports.run');
 
     // ---------------- Scenarios ----------------
-    $r->post('/api/v1/terms/{termId}/scenarios', function (Request $req) use ($scenario) {
+    $r->post('/api/v1/terms/{termId}/scenarios', function (Request $req) use ($scenario, $assertTerm) {
+        $assertTerm($req);
         Response::json($scenario->simulate(
             (int) $req->param('termId'),
             (string) $req->input('name', 'Untitled scenario'),
@@ -398,7 +458,8 @@ return function (Router $r, array $config): void {
         ));
     }, 'scenarios.run');
 
-    $r->get('/api/v1/terms/{termId}/scenarios', function (Request $req) {
+    $r->get('/api/v1/terms/{termId}/scenarios', function (Request $req) use ($assertTerm) {
+        $assertTerm($req);
         Response::json(DB::select(
             'SELECT id, name, description, parameters, result, status, created_at
              FROM scenarios WHERE term_id = ? ORDER BY id DESC',
@@ -407,11 +468,23 @@ return function (Router $r, array $config): void {
     }, 'scenarios.run');
 
     $r->post('/api/v1/scenarios/{id}/apply', function (Request $req) use ($scenario) {
+        // Scenarios are term-scoped: ownership flows through the scenario's term.
+        $row = DB::selectOne('SELECT term_id FROM scenarios WHERE id = ?', [(int) $req->param('id')]);
+        if ($row === null) {
+            Response::error('Scenario not found', 404);
+        }
+        Tenancy::assertOwns('terms', (int) $row['term_id']);
         Response::json($scenario->apply((int) $req->param('id')));
     }, 'schedule.generate');
 
     // ---------------- Workflow ----------------
-    $r->get('/api/v1/terms/{termId}/workflow/{deptId}', function (Request $req) use ($workflow) {
+    $assertWorkflowScope = function (Request $req): void {
+        Tenancy::assertOwns('terms', (int) $req->param('termId'));
+        Tenancy::assertOwns('departments', (int) $req->param('deptId'));
+    };
+
+    $r->get('/api/v1/terms/{termId}/workflow/{deptId}', function (Request $req) use ($workflow, $assertWorkflowScope) {
+        $assertWorkflowScope($req);
         $termId = (int) $req->param('termId');
         $deptId = (int) $req->param('deptId');
         Response::json([
@@ -421,19 +494,48 @@ return function (Router $r, array $config): void {
         ]);
     }, 'schedule.view');
 
-    $r->post('/api/v1/terms/{termId}/workflow/{deptId}/advance', function (Request $req) use ($workflow) {
+    $r->post('/api/v1/terms/{termId}/workflow/{deptId}/advance', function (Request $req) use ($workflow, $assertWorkflowScope) {
+        $assertWorkflowScope($req);
         Response::json($workflow->advance(
             (int) $req->param('termId'), (int) $req->param('deptId'),
             (string) $req->input('comment', '')
         ));
     }, 'schedule.edit');
 
-    $r->post('/api/v1/terms/{termId}/workflow/{deptId}/reject', function (Request $req) use ($workflow) {
+    $r->post('/api/v1/terms/{termId}/workflow/{deptId}/reject', function (Request $req) use ($workflow, $assertWorkflowScope) {
+        $assertWorkflowScope($req);
         Response::json($workflow->reject(
             (int) $req->param('termId'), (int) $req->param('deptId'),
             (string) $req->input('comment', 'Rejected')
         ));
     }, 'schedule.approve');
+
+    // ---------------- Audit logs (tenant-scoped) ----------------
+    $r->get('/api/v1/audit-logs', function (Request $req) {
+        $params = [Tenancy::requireId()];
+        $filters = '';
+        if ($req->input('action')) {
+            $filters .= ' AND a.action = ?';
+            $params[] = (string) $req->input('action');
+        }
+        if ($req->input('entity_type')) {
+            $filters .= ' AND a.entity_type = ?';
+            $params[] = (string) $req->input('entity_type');
+        }
+        if ($req->input('user_id')) {
+            $filters .= ' AND a.user_id = ?';
+            $params[] = $req->int('user_id');
+        }
+        $limit = min(500, max(1, $req->int('limit', 100)));
+        Response::json(DB::select(
+            "SELECT a.id, a.action, a.entity_type, a.entity_id, a.old_values, a.new_values,
+                    a.ip_address, a.created_at, u.name actor, u.email actor_email
+             FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
+             WHERE a.tenant_id = ?$filters
+             ORDER BY a.id DESC LIMIT $limit",
+            $params
+        ));
+    }, 'admin.audit');
 
     // ---------------- Notifications ----------------
     $r->get('/api/v1/notifications', function () {

@@ -5,8 +5,19 @@ or any Mermaid viewer.
 
 ## Core scheduling domain
 
+Every root entity carries a `tenant_id` referencing `TENANTS` (one row per institution);
+unique keys are composite per tenant (e.g. `(tenant_id, code)`).
+
 ```mermaid
 erDiagram
+    TENANTS ||--o{ USERS : owns
+    TENANTS ||--o{ CAMPUSES : owns
+    TENANTS ||--o{ DEPARTMENTS : owns
+    TENANTS ||--o{ TERMS : owns
+    TENANTS ||--o{ COURSES : owns
+    TENANTS ||--o{ FACULTY : owns
+    TENANTS ||--o{ ROOMS : owns
+    TENANTS ||--o{ SECTIONS : owns
     CAMPUSES ||--o{ BUILDINGS : contains
     BUILDINGS ||--o{ ROOMS : contains
     COLLEGES ||--o{ DEPARTMENTS : contains
@@ -124,6 +135,7 @@ erDiagram
 
 | Table | Purpose |
 |---|---|
+| `tenants` | Institutions (multi-tenancy root); per-tenant unique keys on all root entities |
 | `terms` | Academic terms (semester/quarter/summer/mini) with workflow status |
 | `courses` | Catalog: credit/contact hours, capacity, lab & equipment needs, requisites |
 | `sections` | The schedulable unit — course × term × section number |
@@ -139,4 +151,4 @@ erDiagram
 | `scenarios` | What-if simulations with parameters and results (JSON) |
 | `approval_workflows` / `approval_actions` | Approval pipeline state + audit trail |
 | `import_batches` | Bulk import validation/commit/rollback bookkeeping |
-| `audit_logs` | Immutable record of every state-changing action |
+| `audit_logs` | Immutable tenant-scoped record of every state-changing action (incl. logins, MFA, exports, cross-tenant denials) |

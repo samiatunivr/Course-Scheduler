@@ -6,6 +6,7 @@ namespace App\Services;
 
 use App\Core\Auth;
 use App\Core\Database as DB;
+use App\Core\Tenancy;
 
 /**
  * AI layer: OpenAI-compatible LLM integration for the conversational
@@ -96,7 +97,8 @@ final class AIService
                  FROM faculty_course_qualifications q
                  JOIN faculty f ON f.id = q.faculty_id
                  JOIN courses c ON c.id = q.course_id
-                 WHERE f.status = "active" LIMIT 200'
+                 WHERE f.status = "active" AND f.tenant_id = ? LIMIT 200',
+                [Tenancy::requireId()]
             );
         }
 
@@ -296,10 +298,10 @@ final class AIService
              LEFT JOIN enrollment_history eh ON eh.course_id = c.id
                  AND eh.term_id = (SELECT MAX(term_id) FROM enrollment_history WHERE course_id = c.id)
              LEFT JOIN sections s ON s.course_id = c.id AND s.term_id = ? AND s.status <> "cancelled"
-             WHERE c.is_active = 1
+             WHERE c.is_active = 1 AND c.tenant_id = ?
              GROUP BY c.id
              HAVING demand > offered_capacity AND offered_capacity > 0',
-            [$termId, $termId]
+            [$termId, $termId, Tenancy::requireId()]
         );
         foreach ($demand as $d) {
             $shortfall = (int) $d['demand'] - (int) $d['offered_capacity'];
@@ -330,10 +332,11 @@ final class AIService
         // 4. Staffing gaps: courses with demand but no qualified active faculty
         $gaps = DB::select(
             'SELECT c.code FROM courses c
-             WHERE c.is_active = 1
+             WHERE c.is_active = 1 AND c.tenant_id = ?
                AND NOT EXISTS (SELECT 1 FROM faculty_course_qualifications q
                                JOIN faculty f ON f.id = q.faculty_id AND f.status = "active"
-                               WHERE q.course_id = c.id)'
+                               WHERE q.course_id = c.id)',
+            [Tenancy::requireId()]
         );
         foreach ($gaps as $g) {
             $recommendations[] = [

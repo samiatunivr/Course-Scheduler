@@ -31,6 +31,9 @@
             ['/imports', 'imports', 'upload', 'Import'],
             ['/assistant', 'assistant', 'stars', 'AI Assistant'],
         ];
+        if (\App\Core\Auth::can('admin.audit')) {
+            $items[] = ['/audit', 'audit', 'journal-text', 'Audit'];
+        }
         foreach ($items as [$href, $key, $icon, $label]): ?>
         <li class="nav-item">
           <a class="nav-link<?= ($active ?? '') === $key ? ' active fw-semibold' : '' ?>" href="<?= e($href) ?>?term_id=<?= (int) $term['id'] ?>">
@@ -48,7 +51,12 @@
           <?php endforeach; ?>
         </select>
       </form>
-      <span class="navbar-text text-light me-2 small"><i class="bi bi-person-circle me-1"></i><?= e($user['name'] ?? '') ?></span>
+      <span class="navbar-text text-light me-2 small">
+        <i class="bi bi-person-circle me-1"></i><?= e($user['name'] ?? '') ?>
+        <?php if (!empty($user['tenant_name'])): ?>
+        <span class="badge text-bg-light ms-1"><?= e($user['tenant_name']) ?></span>
+        <?php endif; ?>
+      </span>
       <a class="btn btn-outline-light btn-sm me-2" href="/security" title="Account security (MFA)"><i class="bi bi-shield-lock"></i></a>
       <a class="btn btn-outline-light btn-sm" href="/logout" title="Sign out"><i class="bi bi-box-arrow-right"></i></a>
     </div>

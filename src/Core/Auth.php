@@ -24,6 +24,9 @@ final class Auth
             [$email]
         );
         if ($user === null || !password_verify($password, (string) $user['password_hash'])) {
+            Audit::log('login_failed', 'user', $user !== null ? (int) $user['id'] : null,
+                null, ['email' => $email]);
+
             return 'fail';
         }
 
@@ -96,6 +99,9 @@ final class Auth
 
     public static function logout(): void
     {
+        if (self::id() !== null) {
+            Audit::log('logout', 'user', self::id());
+        }
         $_SESSION = [];
         session_destroy();
         self::$user = null;
@@ -128,7 +134,9 @@ final class Auth
         }
 
         self::$user = Database::selectOne(
-            'SELECT id, email, name, is_active FROM users WHERE id = ? AND is_active = 1',
+            'SELECT u.id, u.email, u.name, u.is_active, u.tenant_id, t.name tenant_name
+             FROM users u JOIN tenants t ON t.id = u.tenant_id
+             WHERE u.id = ? AND u.is_active = 1 AND t.is_active = 1',
             [(int) $userId]
         );
 
