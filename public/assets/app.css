@@ -1,0 +1,59 @@
+:root {
+  --brand: #1f4e79;
+  --brand-dark: #163a5c;
+}
+
+.bg-primary-dark { background-color: var(--brand) !important; }
+.btn-primary { background-color: var(--brand); border-color: var(--brand); }
+.btn-primary:hover { background-color: var(--brand-dark); border-color: var(--brand-dark); }
+.text-primary { color: var(--brand) !important; }
+
+.kpi-card { transition: transform .15s; }
+.kpi-card:hover { transform: translateY(-2px); }
+
+/* Heatmap */
+.heatmap td { width: 44px; height: 30px; font-size: .75rem; }
+
+/* Scheduler weekly board */
+.schedule-grid td.slot {
+  height: 56px;
+  min-width: 150px;
+  vertical-align: top;
+  padding: 2px;
+}
+.schedule-grid td.slot.drag-over { background: #e3f0ff; outline: 2px dashed var(--brand); }
+.class-card {
+  background: var(--brand);
+  color: #fff;
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: .72rem;
+  margin-bottom: 2px;
+  cursor: grab;
+  line-height: 1.25;
+}
+.class-card .meta { opacity: .85; }
+.class-card.conflicted { background: #b02a37; }
+.class-card.dragging { opacity: .4; }
+
+/* Workflow stepper */
+.workflow-steps .step-dot {
+  width: 26px; height: 26px; line-height: 26px;
+  border-radius: 50%; background: #dee2e6; color: #555;
+  margin: 0 auto; font-size: .75rem; font-weight: 600;
+}
+.workflow-steps .step.done .step-dot { background: var(--brand); color: #fff; }
+.workflow-steps .step-label { font-size: .6rem; color: #777; margin-top: 2px; }
+
+/* AI chat */
+.chat-msg { display: flex; margin-bottom: .6rem; }
+.chat-msg.user { justify-content: flex-end; }
+.chat-msg .bubble {
+  max-width: 80%;
+  padding: .5rem .75rem;
+  border-radius: 12px;
+  font-size: .875rem;
+  white-space: pre-wrap;
+}
+.chat-msg.user .bubble { background: var(--brand); color: #fff; border-bottom-right-radius: 2px; }
+.chat-msg.assistant .bubble { background: #eef2f7; border-bottom-left-radius: 2px; }

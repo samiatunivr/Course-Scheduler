@@ -1,0 +1,8 @@
+/vendor/
+/.env
+/storage/reports/*
+!/storage/reports/.gitkeep
+*.log
+.DS_Store
+.idea/
+.vscode/
