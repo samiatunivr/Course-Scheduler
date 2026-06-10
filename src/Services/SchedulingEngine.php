@@ -6,6 +6,7 @@ namespace App\Services;
 
 use App\Core\Audit;
 use App\Core\Database as DB;
+use App\Core\Tenancy;
 
 /**
  * Deterministic scheduling core: conflict detection and automatic
@@ -427,7 +428,10 @@ final class SchedulingEngine
         $courses = $this->loadCoursesWithDemand($termId, $departmentId, $deltaPct);
         $faculty = $this->loadFacultyState($termId, $departmentId, $excludeFaculty, $replace);
         $rooms = $this->loadRooms($excludeRooms, $termId);
-        $patterns = DB::select('SELECT * FROM meeting_patterns ORDER BY start_time');
+        $patterns = DB::select(
+            'SELECT * FROM meeting_patterns WHERE tenant_id = ? ORDER BY start_time',
+            [Tenancy::requireId()]
+        );
 
         // Occupancy maps: existing meetings unless we're replacing drafts.
         [$facultyBusy, $roomBusy] = $this->loadOccupancy($termId, $replace);
@@ -490,10 +494,10 @@ final class SchedulingEngine
 
     private function loadCoursesWithDemand(int $termId, ?int $departmentId, float $deltaPct): array
     {
-        $params = [$termId, $termId, $termId];
-        $deptFilter = '';
+        $params = [$termId, $termId, $termId, Tenancy::requireId()];
+        $deptFilter = ' AND c.tenant_id = ?';
         if ($departmentId !== null) {
-            $deptFilter = ' AND c.department_id = ?';
+            $deptFilter .= ' AND c.department_id = ?';
             $params[] = $departmentId;
         }
         $courses = DB::select(
@@ -521,10 +525,10 @@ final class SchedulingEngine
 
     private function loadFacultyState(int $termId, ?int $departmentId, array $exclude, bool $replace): array
     {
-        $params = [$termId, $termId, $replace ? 'draft' : '__none__', $termId];
-        $deptFilter = '';
+        $params = [$termId, $termId, $replace ? 'draft' : '__none__', $termId, Tenancy::requireId()];
+        $deptFilter = ' AND f.tenant_id = ?';
         if ($departmentId !== null) {
-            $deptFilter = ' AND f.department_id = ?';
+            $deptFilter .= ' AND f.department_id = ?';
             $params[] = $departmentId;
         }
         $rows = DB::select(
@@ -571,11 +575,11 @@ final class SchedulingEngine
     {
         $rooms = DB::select(
             'SELECT r.* FROM rooms r
-             WHERE r.is_active = 1 AND r.type <> "online"
+             WHERE r.is_active = 1 AND r.type <> "online" AND r.tenant_id = ?
                AND NOT EXISTS (SELECT 1 FROM room_closures rc WHERE rc.room_id = r.id
                                AND (rc.term_id = ? OR rc.term_id IS NULL))
              ORDER BY r.capacity ASC',
-            [$termId]
+            [Tenancy::requireId(), $termId]
         );
 
         return array_values(array_filter($rooms, fn ($r) => !in_array((int) $r['id'], $exclude, true)));
@@ -804,6 +808,7 @@ final class SchedulingEngine
             }
             foreach ($created as $row) {
                 $sectionId = DB::insert('sections', [
+                    'tenant_id' => Tenancy::requireId(),
                     'course_id' => $row['course_id'],
                     'term_id' => $termId,
                     'section_no' => $row['section_no'],

@@ -27,8 +27,13 @@ OpenAI-compatible LLM integration. Runs on shared hosting (Hostinger Premium) �
   bulk CSV import with validation, preview, error reports and rollback.
 - **Conversational AI assistant** — grounded in live institutional data with
   permission-checked context; works in deterministic analytics mode without an API key.
-- **Security** — RBAC with department-scoped roles, bcrypt, session + API token auth,
-  immutable audit logs, prepared statements everywhere, security headers, SSO-ready.
+- **Multi-tenant** — host multiple institutions on one deployment: row-level tenant
+  isolation enforced on every query and id parameter (cross-tenant access returns 404 and
+  is audit-logged), per-tenant unique codes, tenant-aware AI/exports/imports/cron.
+- **Security & auditability** — RBAC with department-scoped roles, built-in TOTP MFA and
+  SAML 2.0 SSO, bcrypt, session + API token auth, tenant-scoped immutable audit trail
+  (logins incl. failures, schedule changes, exports, imports, approvals) with an admin
+  viewer at `/audit`, prepared statements everywhere, security headers.
 
 ## Quick start (development)
 

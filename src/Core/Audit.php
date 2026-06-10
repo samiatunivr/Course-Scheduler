@@ -16,6 +16,7 @@ final class Audit
     ): void {
         try {
             Database::insert('audit_logs', [
+                'tenant_id' => Tenancy::id(),
                 'user_id' => Auth::id(),
                 'action' => $action,
                 'entity_type' => $entityType,

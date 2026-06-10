@@ -1,6 +1,13 @@
 -- Demo / starter data for the University Course Scheduler
 SET NAMES utf8mb4;
 
+-- Tenants (institutions). All unprefixed inserts below rely on the
+-- tenant_id DEFAULT 1 and belong to Demo University.
+INSERT INTO tenants (id, code, name, domain) VALUES
+(1, 'DEMO', 'Demo University', 'example.edu'),
+(2, 'NSC', 'North State College', 'northstate.edu')
+ON DUPLICATE KEY UPDATE name = VALUES(name);
+
 -- Roles & permissions ---------------------------------------------------
 INSERT INTO roles (code, name, description) VALUES
 ('admin', 'System Administrator', 'Full access to all modules'),
@@ -245,3 +252,66 @@ JOIN (SELECT 'CSC101' code, 118 enrolled, 12 wl, 2 secs UNION ALL
       SELECT 'EE205', 36, 2, 1 UNION ALL
       SELECT 'BUS110', 66, 0, 1) e ON e.code = c.code
 ON DUPLICATE KEY UPDATE enrolled = VALUES(enrolled);
+
+-- ---------------------------------------------------------------------
+-- Second tenant: North State College — demonstrates tenant isolation.
+-- Codes like CSC / CSC101 / FA2026 intentionally duplicate tenant 1's:
+-- uniqueness is per tenant.
+-- ---------------------------------------------------------------------
+INSERT INTO users (tenant_id, email, name, password_hash) VALUES
+(2, 'admin@northstate.edu', 'NSC Administrator',
+ '$2y$12$wgUs8kn/vGUhXVcCGik4K.TvDTRqnypz3lN6mGqBwhzCDKNsLNSei')
+ON DUPLICATE KEY UPDATE name = VALUES(name);
+
+INSERT IGNORE INTO user_roles (user_id, role_id, department_id)
+SELECT u.id, r.id, NULL FROM users u, roles r
+WHERE u.email = 'admin@northstate.edu' AND r.code = 'admin';
+
+INSERT INTO departments (tenant_id, college_id, code, name)
+VALUES (2, NULL, 'CSC', 'Computing & Data Science')
+ON DUPLICATE KEY UPDATE name = VALUES(name);
+
+INSERT INTO academic_years (tenant_id, name, start_date, end_date)
+VALUES (2, '2026-2027', '2026-08-15', '2027-06-15')
+ON DUPLICATE KEY UPDATE start_date = VALUES(start_date);
+
+INSERT INTO terms (tenant_id, academic_year_id, code, name, type, start_date, end_date, status)
+SELECT 2, ay.id, 'FA2026', 'Fall 2026', 'semester', '2026-08-24', '2026-12-14', 'draft'
+FROM academic_years ay WHERE ay.tenant_id = 2 AND ay.name = '2026-2027'
+ON DUPLICATE KEY UPDATE name = VALUES(name);
+
+INSERT INTO meeting_patterns (tenant_id, code, days, start_time, end_time, minutes_per_week) VALUES
+(2, 'MWF-0900', 'Mon,Wed,Fri', '09:00', '09:50', 150),
+(2, 'TR-1030', 'Tue,Thu', '10:30', '11:45', 150)
+ON DUPLICATE KEY UPDATE days = VALUES(days);
+
+INSERT INTO rooms (tenant_id, building_id, code, name, type, capacity, equipment) VALUES
+(2, NULL, 'NSC-101', 'North Hall 101', 'classroom', 45, '["projector"]')
+ON DUPLICATE KEY UPDATE capacity = VALUES(capacity);
+
+INSERT INTO courses (tenant_id, department_id, code, title, credit_hours, contact_hours, default_capacity)
+SELECT 2, d.id, 'CSC101', 'Foundations of Computing', 3.0, 3.0, 40
+FROM departments d WHERE d.tenant_id = 2 AND d.code = 'CSC'
+ON DUPLICATE KEY UPDATE title = VALUES(title);
+
+INSERT INTO faculty (tenant_id, department_id, first_name, last_name, email, rank, contract_type, max_credit_hours, max_contact_hours)
+SELECT 2, d.id, 'Iris', 'Holm', 'i.holm@northstate.edu', 'lecturer', 'full_time', 12.0, 15.0
+FROM departments d WHERE d.tenant_id = 2 AND d.code = 'CSC'
+ON DUPLICATE KEY UPDATE rank = VALUES(rank);
+
+INSERT IGNORE INTO faculty_course_qualifications (faculty_id, course_id, level, times_taught)
+SELECT f.id, c.id, 'expert', 5 FROM faculty f
+JOIN courses c ON c.tenant_id = 2 AND c.code = 'CSC101'
+WHERE f.email = 'i.holm@northstate.edu';
+
+INSERT INTO faculty_availability (faculty_id, day, start_time, end_time, preference)
+SELECT f.id, d.day, '08:00', '18:00', 'available'
+FROM faculty f
+JOIN (SELECT 'Mon' day UNION ALL SELECT 'Tue' UNION ALL SELECT 'Wed' UNION ALL SELECT 'Thu' UNION ALL SELECT 'Fri') d
+WHERE f.email = 'i.holm@northstate.edu'
+  AND NOT EXISTS (SELECT 1 FROM faculty_availability fa WHERE fa.faculty_id = f.id);
+
+INSERT INTO workload_policies (tenant_id, department_id, contract_type, name, rule_type, rule_value, severity)
+SELECT 2, NULL, 'full_time', 'NSC full-time max teaching load', 'max_credit_hours', 12.0, 'error'
+FROM dual
+WHERE NOT EXISTS (SELECT 1 FROM workload_policies WHERE tenant_id = 2);

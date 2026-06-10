@@ -7,6 +7,7 @@ namespace App\Services;
 use App\Core\Audit;
 use App\Core\Auth;
 use App\Core\Database as DB;
+use App\Core\Tenancy;
 
 /**
  * Bulk CSV/Excel import with validation, preview, error reporting and
@@ -67,6 +68,7 @@ final class ImportService
         }
 
         $batchId = DB::insert('import_batches', [
+            'tenant_id' => Tenancy::requireId(),
             'user_id' => Auth::id() ?? 0,
             'entity_type' => $entityType,
             'file_name' => $fileName,
@@ -127,11 +129,13 @@ final class ImportService
             case 'enrollment':
                 $require(['course_code', 'term_code', 'enrolled']);
                 if (($row['course_code'] ?? '') !== ''
-                    && DB::selectOne('SELECT id FROM courses WHERE code = ?', [$row['course_code']]) === null) {
+                    && DB::selectOne('SELECT id FROM courses WHERE code = ? AND tenant_id = ?',
+                        [$row['course_code'], Tenancy::requireId()]) === null) {
                     $errors[] = 'Unknown course: ' . $row['course_code'];
                 }
                 if (($row['term_code'] ?? '') !== ''
-                    && DB::selectOne('SELECT id FROM terms WHERE code = ?', [$row['term_code']]) === null) {
+                    && DB::selectOne('SELECT id FROM terms WHERE code = ? AND tenant_id = ?',
+                        [$row['term_code'], Tenancy::requireId()]) === null) {
                     $errors[] = 'Unknown term: ' . $row['term_code'];
                 }
                 break;
@@ -177,6 +181,7 @@ final class ImportService
         switch ($entityType) {
             case 'faculty':
                 $id = DB::insert('faculty', [
+                    'tenant_id' => Tenancy::requireId(),
                     'department_id' => $this->departmentId((string) $row['department_code']),
                     'first_name' => $row['first_name'],
                     'last_name' => $row['last_name'],
@@ -189,6 +194,7 @@ final class ImportService
                 return ['table' => 'faculty', 'id' => $id];
             case 'courses':
                 $id = DB::insert('courses', [
+                    'tenant_id' => Tenancy::requireId(),
                     'department_id' => $this->departmentId((string) $row['department_code']),
                     'code' => strtoupper((string) $row['code']),
                     'title' => $row['title'],
@@ -200,6 +206,7 @@ final class ImportService
                 return ['table' => 'courses', 'id' => $id];
             case 'rooms':
                 $id = DB::insert('rooms', [
+                    'tenant_id' => Tenancy::requireId(),
                     'code' => strtoupper((string) $row['code']),
                     'name' => $row['name'],
                     'type' => $row['type'] ?? 'classroom',
@@ -211,8 +218,10 @@ final class ImportService
 
                 return ['table' => 'rooms', 'id' => $id];
             case 'enrollment':
-                $course = DB::selectOne('SELECT id FROM courses WHERE code = ?', [$row['course_code']]);
-                $term = DB::selectOne('SELECT id FROM terms WHERE code = ?', [$row['term_code']]);
+                $course = DB::selectOne('SELECT id FROM courses WHERE code = ? AND tenant_id = ?',
+                    [$row['course_code'], Tenancy::requireId()]);
+                $term = DB::selectOne('SELECT id FROM terms WHERE code = ? AND tenant_id = ?',
+                    [$row['term_code'], Tenancy::requireId()]);
                 $id = DB::insert('enrollment_history', [
                     'course_id' => (int) $course['id'],
                     'term_id' => (int) $term['id'],
@@ -223,7 +232,8 @@ final class ImportService
 
                 return ['table' => 'enrollment_history', 'id' => $id];
             case 'availability':
-                $faculty = DB::selectOne('SELECT id FROM faculty WHERE email = ?', [$row['faculty_email']]);
+                $faculty = DB::selectOne('SELECT id FROM faculty WHERE email = ? AND tenant_id = ?',
+                    [$row['faculty_email'], Tenancy::requireId()]);
                 if ($faculty === null) {
                     throw new \RuntimeException('Unknown faculty: ' . $row['faculty_email']);
                 }
@@ -269,7 +279,8 @@ final class ImportService
 
     private function departmentId(string $code): ?int
     {
-        $row = DB::selectOne('SELECT id FROM departments WHERE code = ?', [$code]);
+        $row = DB::selectOne('SELECT id FROM departments WHERE code = ? AND tenant_id = ?',
+            [$code, Tenancy::requireId()]);
 
         return $row === null ? null : (int) $row['id'];
     }

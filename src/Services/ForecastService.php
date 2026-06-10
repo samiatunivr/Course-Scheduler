@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Core\Database as DB;
+use App\Core\Tenancy;
 
 /**
  * Enrollment forecasting. Uses weighted linear trend over enrollment
@@ -18,7 +19,8 @@ final class ForecastService
         $courses = DB::select(
             'SELECT DISTINCT c.id, c.code FROM courses c
              JOIN enrollment_history eh ON eh.course_id = c.id
-             WHERE c.is_active = 1'
+             WHERE c.is_active = 1 AND c.tenant_id = ?',
+            [Tenancy::requireId()]
         );
 
         $results = [];

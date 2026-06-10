@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Core\Database as DB;
+use App\Core\Tenancy;
 
 /**
  * Faculty workload computation, configurable policy validation
@@ -19,10 +20,10 @@ final class WorkloadService
      */
     public function facultyWorkloads(int $termId, ?int $departmentId = null): array
     {
-        $params = [$termId, $termId, $termId, $termId];
-        $deptFilter = '';
+        $params = [$termId, $termId, $termId, $termId, Tenancy::requireId()];
+        $deptFilter = ' AND f.tenant_id = ?';
         if ($departmentId !== null) {
-            $deptFilter = ' AND f.department_id = ?';
+            $deptFilter .= ' AND f.department_id = ?';
             $params[] = $departmentId;
         }
 
@@ -78,10 +79,10 @@ final class WorkloadService
     {
         $policies = DB::select(
             'SELECT * FROM workload_policies
-             WHERE is_active = 1
+             WHERE is_active = 1 AND tenant_id = ?
                AND (department_id IS NULL OR department_id = ?)
                AND (contract_type = "any" OR contract_type = ?)',
-            [(int) $w['department_id'], $w['contract_type']]
+            [Tenancy::requireId(), (int) $w['department_id'], $w['contract_type']]
         );
 
         $violations = [];
